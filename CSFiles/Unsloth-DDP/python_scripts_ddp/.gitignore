@@ -1,0 +1,11 @@
+# Test files
+test_input.py
+test_output/
+
+# Generated output directory
+ddp_output/
+
+# Temporary files
+*.pyc
+__pycache__/
+*.backup

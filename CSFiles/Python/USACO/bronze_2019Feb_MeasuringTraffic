@@ -1,0 +1,19 @@
+import sys
+
+sys.stdin = open("traffic.in", "r")
+sys.stdout = open("traffic.out", "w")
+
+n = int(input())
+data = {'on':[0, 1000], 'off':[0, 1000], 'none':[0, 1000]}
+plus = [0, 1000]
+minus = 0
+for i in range(n):
+    d = input().split()
+    d[1] = int(d[1])
+    d[2] = int(d[2])
+
+    if d[0] == 'on':
+        plus
+
+print((data['none'][0] - data['on'][1]), (data['none'][1] - data['on'][0]))
+print((data['none'][0] - data['off'][1]), (data['none'][1] - data['off'][0]))

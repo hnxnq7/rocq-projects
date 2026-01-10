@@ -1,0 +1,32 @@
+import sys
+
+sys.stdin = open("baseball.in", "r")
+sys.stdout = open("baseball.out", "w")
+
+numCows = int(input())
+cows = []
+for i in range(numCows):
+    cows.append(int(input()))
+cows = sorted(cows)
+
+diff = []
+for i in range(1, numCows):
+    diff.append(cows[i] - cows[i-1])
+
+count = 0
+while len(diff) != 0:
+    total = diff[0]
+    for d in range(1, len(diff)):
+        total += diff[d]
+        first = 0
+        for c in range(d):
+            first += diff[c]
+            second = total - first
+            if second >= first:
+                if second <= first*2:
+                    count += 1
+            else:
+                break
+    diff.pop(0)
+
+print(count)

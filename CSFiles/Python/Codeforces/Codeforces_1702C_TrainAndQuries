@@ -1,0 +1,20 @@
+numTest = int(input())
+for t in range(numTest):
+    blank = input()
+    n, k = [int(x) for x in input().split()]
+    stations = [int(x) for x in input().split()]
+    for i in range(k):
+        s = [int(x) for x in input().split()]
+        if s[0] not in stations or s[1] not in stations:
+            print('NO')
+            continue
+        else:
+            first = stations.index(s[0])
+            for i in range(n-1, -1, -1):
+                if stations[i] == s[1]:
+                    second = i
+                    break
+            if second < first:
+                print('NO')
+                continue
+        print('YES')

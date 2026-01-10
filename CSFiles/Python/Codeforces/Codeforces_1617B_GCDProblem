@@ -1,0 +1,20 @@
+import math
+
+def abc(total):
+    for n in range(1, total//3):
+        if total % n == 0:
+            num = total // n
+            for i in range(2, num-1):
+                if math.gcd(i, num-i-1) == 1:
+                    a = i*n
+                    b = (num-i-1)*n
+                    c = n
+                    return '{} {} {}'.format(a, b, c)
+
+
+numTest = int(input())
+for t in range(numTest):
+    total = int(input())
+    print(abc(total))
+            
+

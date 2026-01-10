@@ -1,0 +1,20 @@
+numCows = int(input())
+cowH = [int(x) for x in input().split()]
+stallH = [int(x) for x in input().split()]
+
+options = []
+for h in stallH:
+    count = 0
+    for c in cowH:
+        if c <= h:
+            count += 1
+    options.append(count)
+
+options = sorted(options)
+way = 1
+count = 0
+for o in options:
+    way *= (o-count)
+    count += 1
+
+print(way)
