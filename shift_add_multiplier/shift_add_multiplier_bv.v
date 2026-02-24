@@ -172,6 +172,18 @@ Qed.
 
 Search bv_modulus.
 
+Lemma n_gt_0_pow_gt_1:
+  forall n, (n > 0)%N -> 2^(Z.of_N n) > 1.
+Proof.
+  intros. rewrite Z.gt_lt_iff. apply Z.pow_gt_1. lia. lia.
+Qed.
+
+Lemma n_le_pow_of_2:
+  forall n, n >= 0 -> n < 2^n.
+Proof.
+  intros. apply Z.pow_gt_lin_r. lia. lia.
+Qed.
+
 Lemma shift_and_add_step_correct :
   forall st a b, Invariant st a b -> Invariant (shift_and_add_step st) a b.
 Proof.
@@ -218,16 +230,36 @@ Proof.
         unfold bv_one.
         apply bv_eq. 
         rewrite <- bv_shiftr_add. reflexivity.
-        assert (bv_unsigned (i st) < Z.of_N (n-1)). assert (bv_unsigned (i st) <> Z.of_N (n - 1)). admit. admit.
-        rewrite Z_to_bv_unsigned. unfold bv_wrap. rewrite Zmod_small. lia.
+        destruct H2 as [_ Hi_lt_n].
+        assert (
+          bv_unsigned (i st) < Z.of_N (n - 1) \/
+          bv_unsigned (i st) = Z.of_N (n - 1)
+        ) by lia.
+        
+        assert (bv_unsigned (i st) <> Z.of_N (n - 1)). intro H_equal. apply H4.
+        apply bv_eq. rewrite bv_unsigned_Z_to_bv. apply H_equal. split.
+        ** lia.
+        ** Search Z.log2. rewrite <- H_equal in H4. rewrite Z_to_bv_bv_unsigned in H4. contradiction.
+        ** rewrite Z_to_bv_unsigned. unfold bv_wrap. rewrite Zmod_small. lia.
         pose proof (bv_modulus_gt_1 n). split. lia. apply bv_modulus_gt_1. lia.
       * cbn. rewrite bv_add_unsigned.
+        pose proof (n_gt_0_pow_gt_1 n pf_n_gt_zero).
+        assert (Z.of_N n >= 0) as H_ge_0 by lia.
+        pose proof (n_le_pow_of_2 (Z.of_N n) H_ge_0).
         {
-          rewrite bv_wrap_small. admit. admit.
+          rewrite bv_wrap_small. split. Search (bv_unsigned _).
+          - apply Z.add_nonneg_nonneg. lia. apply bv_unsigned_in_range.
+          - apply bv_neq in H4. rewrite bv_unsigned_Z_to_bv in H4. unfold bv_one.
+            rewrite bv_unsigned_Z_to_bv; lia. lia.
+          - unfold bv_modulus. unfold bv_one. rewrite bv_unsigned_Z_to_bv by lia.
+            apply bv_neq in H4. rewrite bv_unsigned_Z_to_bv in H4; lia.
         }
       * cbn. rewrite Z_to_bv_unsigned. rewrite bv_wrap_small. reflexivity.
-        unfold partial_mul.
-        admit. (* find prev proof later*) 
+        unfold partial_mul. unfold bv_modulus.
+        assert (0 <= bv_unsigned b `mod` 2 ^ bv_unsigned (i st + bv_one) < 2 ^ bv_unsigned (i st + bv_one)).
+        Check Z.pow_add_r.
+        Search ((_ `mod` _) < _).
+        admit.
 Admitted.
 
 Print iter.
@@ -256,7 +288,7 @@ Proof.
     * admit.
     * rewrite bv_unsigned_Z_to_bv; lia.
     * rewrite bv_unsigned_Z_to_bv; [| lia]. unfold partial_mul.
-      admit.
+      admit. (* partial mul proof*)
   }
   unfold stn. unfold st0. simpl. apply shift_and_add_step_correct in IHm.
   unfold stn in *. unfold st0 in *.
