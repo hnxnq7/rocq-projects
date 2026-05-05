@@ -5,8 +5,10 @@ Require Import Coq.Vectors.Fin.
 From stdpp Require Import base.
 From stdpp Require Import bitvector.
 From stdpp Require Import list.
-
 Open Scope Z_scope.
+
+From RecordUpdate Require Import RecordUpdate.
+Import RecordSetNotations.
 
 Record AffinePoint {p : Z} := {
   aX : Z;
@@ -363,17 +365,20 @@ End Montgomery.
 
 Section HammingWeight.
   Variable n : N. (* width of bv *)
-  Variable p : bv n. 
+  Variable p : bv n.
 
-  (* check if mod at every operation? *)
-  (* signed or unsigned? *)
-
-  (* bv version *)
+  (* ══════════════════════════════════════════════════════════════════════════
+     Field arithmetic — bitvector versions of fadd/fsub/fmul (reduction mod p)
+     ══════════════════════════════════════════════════════════════════════════ *)
   Definition fadd_bv (a b : bv n) : bv n := bv_modu (bv_add a b) p .
   Definition fsub_bv (a b : bv n) : bv n := bv_modu (bv_sub a b) p.
   Definition fmul_bv (a b : bv n) : bv n := bv_modu (bv_mul a b) p.
   Definition fsq_bv  (a : bv n)   : bv n := fmul_bv a a.
 
+  (* ══════════════════════════════════════════════════════════════════════════
+     Probabilistic model — infrastructure for a future information-theoretic
+     leakage argument (not yet connected to the main proof chain)
+     ══════════════════════════════════════════════════════════════════════════ *)
   Inductive ProbType :=
     | Prob_concrete
     | Prob_random (* seed *)
@@ -429,9 +434,9 @@ Section HammingWeight.
     | ProbHW_random
     | ProbHW_unknown.
   
-  (* Todo: toy example of masking? *)
-
-  (* language *)
+  (* ══════════════════════════════════════════════════════════════════════════
+     Register machine ISA — toy language used to model LadderStep execution
+     ══════════════════════════════════════════════════════════════════════════ *)
   Definition var := nat.
 
   Inductive instr : Type :=
@@ -537,9 +542,13 @@ Section HammingWeight.
     | Observe rd     => (env, [RegObservation rd (prob_read_register env rd).(Value)])
     end.
   
+  
+  (* ══════════════════════════════════════════════════════════════════════════
+     Dual Circuit — side-channel security proof via complementary register bank
+     ══════════════════════════════════════════════════════════════════════════ *)
   Section DualCircuit.
 
-    (* Types & operational semantics *)
+    (* ── Operational semantics ───────────────────────────────────────────── *)
 
     Definition Env := list (bv n).
     Record state := { env : Env; denv : Env }.
@@ -589,7 +598,7 @@ Section HammingWeight.
 
 
 
-    (* Length preservation *)
+    (* ── Preservation lemmas ─────────────────────────────────────────────── *)
 
     Lemma write_register_length : forall (e : Env) (i : var) (v : bv n),
       length (write_register e i v) = length e.
@@ -679,7 +688,8 @@ Section HammingWeight.
         destruct b; simpl. rewrite fold_left_plus. lia. rewrite fold_left_plus with (acc := 1). lia.
     Qed.
 
-    (* Helpers for bv_to_bits_not *)
+    (* ── HW complement — the core bit-counting identity ─────────────────── *)
+
     Create HintDb List.
     Hint Rewrite length_map : List.
     Hint Rewrite @length_bv_to_bits : List.
@@ -786,7 +796,7 @@ Section HammingWeight.
 
 
 
-    (* Main security theorem *)
+    (* ── Security theorem: full register set ────────────────────────────── *)
 
     Lemma all_secure : forall (prog : list instr) (init_s : state),
       valid_state init_s -> secure prog init_s.
@@ -799,9 +809,11 @@ Section HammingWeight.
 
     
 
-    (* secret register vs public *)
+    (* ── Security theorem: secret registers only ────────────────────────── *)
 
     Inductive RegClass := | SecretReg | PublicReg.
+    #[global] Instance RegClass_eq_dec : EqDecision RegClass.
+    Proof. solve_decision. Defined.
 
     (* In the ladder X1 and A24 are public inputs, everything else is secret *)
     Definition ladder_classify (r : var) : RegClass :=
@@ -897,11 +909,10 @@ Section HammingWeight.
       intros steps.
       apply valid_state_num_1s_regs.
       - apply run_preserves_valid. exact Hvalid.
-      - (* run preserves register bounds - needs a lemma? *)
-        admit.
-    Admitted.
+      - intros r Hr. rewrite run_preserves_length. apply Hbounds. exact Hr.
+    Qed.
 
-    (* Compact register allocation *)
+    (* ── Compact register allocation (12 registers, same security) ─────── *)
 
     Notation cX1  := 0  (only parsing).   (* public: base point x-coord     *)
     Notation cX2  := 1  (only parsing).   (* secret                          *)
@@ -972,7 +983,103 @@ Section HammingWeight.
       - apply run_preserves_valid. exact Hvalid.
       - intros r Hr.
         rewrite run_preserves_length. apply Hbounds. exact Hr.
-    Admitted.  (* valid_state_num_1s_regs *)
+    Qed.
+
+    (* ── Selective dualization — bridge to processor model ──────────────────
+       Full valid_state dualizes every register. The StateMachine only allocates
+       dual slots for secret registers, so we need valid_state_partial here as
+       the connecting invariant.                                               *)
+
+    (* valid_state_partial: only secret registers have their complement tracked *)
+    Definition valid_state_partial (s : state) (classify : var → RegClass) : Prop :=
+      forall r,
+        classify r = SecretReg →
+        r < length s.(env) →
+        read_register s.(denv) r = bv_not (read_register s.(env) r).
+
+    (* Observe that valid_state implies valid_state_partial for any classify:
+       if every register has its complement, then in particular secret ones do. *)
+    Lemma valid_state_implies_partial :
+      forall (s : state) (classify : var → RegClass),
+        valid_state s →
+        (forall r, r < length s.(env)) →
+        valid_state_partial s classify.
+    Proof.
+      intros s classify Hv _Hlen r _Hsec Hr.
+      unfold valid_state in Hv.
+      rewrite Hv.
+      apply read_register_map_not.
+      exact Hr.
+    Qed.
+
+    (* dual_interp_selective: like dual_interp_instr but only updates denv[rd] when classify says rd is a secret register.
+       - Public register writes leave denv unchanged. *)
+    Definition dual_interp_selective
+        (classify : var → RegClass) (s : state) (e : instr) : state * list Observation :=
+      let '(env', obs) := interp_instr s.(env) e in
+      let denv' :=
+        match e with
+        | IAdd rd _ _ | ISub rd _ _ | IMul rd _ _ =>
+            if decide (classify rd = SecretReg)
+            then write_register s.(denv) rd (bv_not (read_register env' rd))
+            else s.(denv)                (* public write: no dual slot to update *)
+        | Observe _ => s.(denv)          (* observations never touch denv *)
+        end
+      in
+      ({| env := env'; denv := denv' |}, obs).
+
+    (* Invariant preservation:
+        if s satisfies valid_state_partial (classify), and the instruction writes a secret register,
+        --> then the updated state still satisfies valid_state_partial.  *)
+    Lemma dual_interp_selective_preserves_partial :
+      forall (classify : var → RegClass) (s : state) (e : instr),
+        valid_state_partial s classify →
+        (forall r, r < length s.(env)) →
+        valid_state_partial (fst (dual_interp_selective classify s e)) classify.
+    Proof.
+      (* intros classify s e Hpartial Hlen.
+      unfold dual_interp_selective, valid_state_partial in *.
+      destruct (interp_instr s.(env) e) as [env' obs] eqn:Hinterp.
+      simpl fst.
+      intros r Hsec Hr.
+      destruct e as [rd ra rb | rd ra rb | rd ra rb | ro];
+        simpl;
+        (try (destruct (decide (classify rd = SecretReg)) as [Heq | Hne])).
+      (* IAdd secret case: denv updated at rd *)
+      - destruct (decide (r = rd)) as [-> | Hne].
+        + rewrite !read_register_write_same. reflexivity.
+        + rewrite !read_register_write_diff by exact Hne.
+          apply Hpartial; [exact Hsec | exact Hr].
+      (* IAdd public case: denv unchanged, env' updated *)
+      - destruct (decide (r = rd)) as [-> | Hne].
+        + (* rd is secret (Hsec) but classify rd ≠ SecretReg (Hne) — contradiction *)
+          exfalso. apply Hne. exact Hsec.
+        + rewrite read_register_write_diff by exact Hne.
+          apply Hpartial; [exact Hsec | exact Hr].
+      (* ISub secret *)
+      - destruct (decide (r = rd)) as [-> | Hne].
+        + rewrite !read_register_write_same. reflexivity.
+        + rewrite !read_register_write_diff by exact Hne.
+          apply Hpartial; [exact Hsec | exact Hr].
+      (* ISub public *)
+      - destruct (decide (r = rd)) as [-> | Hne].
+        + exfalso. apply Hne. exact Hsec.
+        + rewrite read_register_write_diff by exact Hne.
+          apply Hpartial; [exact Hsec | exact Hr].
+      (* IMul secret *)
+      - destruct (decide (r = rd)) as [-> | Hne].
+        + rewrite !read_register_write_same. reflexivity.
+        + rewrite !read_register_write_diff by exact Hne.
+          apply Hpartial; [exact Hsec | exact Hr].
+      (* IMul public *)
+      - destruct (decide (r = rd)) as [-> | Hne].
+        + exfalso. apply Hne. exact Hsec.
+        + rewrite read_register_write_diff by exact Hne.
+          apply Hpartial; [exact Hsec | exact Hr].
+      (* Observe: denv unchanged *)
+      - apply Hpartial; [exact Hsec | exact Hr].
+    Qed. *)
+    Admitted.
 
     (* 1. set of public registers --> public are not duplicated *)
         (* ISA contract? write another update function where only have shadow regs for secret *)
@@ -991,26 +1098,19 @@ Section HammingWeight.
     (* duplicate dynamically? some registers are 0 until you allocate a pair *)
   End DualCircuit.
 
-  (* normal probability theory *)
-  (* standard probability notation? *)
-  (* probability > normal draws -->  *)
-  (* justify from first principle? *)
-    (* probability defined - in information theory library? *)
-
-  (* end goal: number of 1's per cycle *)
-  (* cryptographic accelerator? *)
-
-  (* whether the number of 1's is the right metric of measuring power? *)
-
 End HammingWeight.
 
-(* Pipeline stages as an enum — mutually exclusive, exactly one active per cycle *)
-Inductive PipelineStage :=
-  | Fetch
-  | Execute
-  | WriteBack.
-
+(* ══════════════════════════════════════════════════════════════════════════════
+   Processor model — concrete 3-stage pipeline with selective register dualization
+   ══════════════════════════════════════════════════════════════════════════════ *)
 Module StateMachine.
+
+  (* Pipeline stages — mutually exclusive, exactly one active per cycle *)
+  Inductive PipelineStage :=
+    | Fetch
+    | Execute
+    | WriteBack.
+
 Section StateMachine.
   Variable n : N.
 
@@ -1022,30 +1122,45 @@ Section StateMachine.
     pc        : bv n;
     Regs      : Vector.t (bv n) 32;      (* all 32 general-purpose registers   *)
     DRegs     : Vector.t (bv n) 16;      (* dual of the 16 secret registers    *)
-    InstrMem  : list instr;              (* program — public                   *)
-    DataMem   : nat -> bv n;             (* data heap                          *)
+    InstrMem  : list instr;              (* program — public                   *) (* to be changed to bv n*)
+    (* DataMem   : nat -> bv n;             data heap                          *)
     Stage     : PipelineStage;           (* current pipeline stage             *)
+
     (* instruction memory bus — public: carries opcodes, no duplication needed *)
     toiMem    : bool * bv n;             (* (valid, fetch addr)                *)
     fromiMem  : bool * bv n;             (* (valid, fetched instr)             *)
+    bookkeepingState : bool * nat * bv n * bv n             (* use nat for now *)
+
     (* data memory bus — may carry secret values, so dualized                  *)
-    todMem    : bool * bv n * bv n;      (* (valid, addr, data)   write bus    *)
+    (* todMem    : bool * bv n * bv n;      (* (valid, addr, data)   write bus    *)
     dtodMem   : bool * bv n * bv n;      (* dual write bus                     *)
     fromdMem  : bool * bv n;             (* (valid, loaded data)  read bus     *)
-    dfromdMem : bool * bv n;             (* dual read bus                      *)
-  }.
+    dfromdMem : bool * bv n;             dual read bus                      *)
+  }. 
+  Instance eta : Settable state := settable! mkState 
+  <pc; Regs; DRegs; InstrMem; Stage; toiMem; fromiMem; bookkeepingState>.
 
-  (* Invariant: every dual register is the bitwise complement of its secret original.
-     DRegs[j] = bv_not (Regs[secret_map[j]])  for all j : Fin.t 16            *)
+  (* ── Invariant ───────────────────────────────────────────────────────────
+     Every dual slot holds the bitwise complement of its secret original.
+     DRegs[j] = bv_not (Regs[secret_map[j]])  for all j : Fin.t 16         *)
   Definition valid_state (s : state) : Prop :=
     forall j : Fin.t 16,
       Vector.nth s.(DRegs) j =
       bv_not (Vector.nth s.(Regs) (Vector.nth secret_map j)).
 
-  (* Stage handlers — admitted until we flesh out the ISA semantics *)
-  Definition fetch     : state -> state. Admitted.
+  (* ── Stage handlers ──────────────────────────────────────────────────── *)
+  Definition fetch (s : state) : state :=
+    s <|toiMem := (true, s.(pc))|>
+    <|Stage := Execute|>.
+
   Definition execute   : state -> state. Admitted.
+  (* upsate bookeepingState *)
   Definition writeback : state -> state. Admitted.
+  (* read bookeepingState *)
+
+  (* something to translate instr to bv n? - LLM *)
+  (* function respond iMem state -> state *)
+    (* fetch instruction from instrMem and respond in fromiMem *)
 
   (* One clock tick: dispatch on the current pipeline stage *)
   Definition tick (s : state) : state :=
@@ -1059,7 +1174,7 @@ Section StateMachine.
   Definition tick_dMem : state -> state. Admitted.
   Definition tick_iMem : state -> state. Admitted.
 
-  (* ── Security theorems ───────────────────────────────────────────────────── *)
+  (* Security theorems *)
 
   (* valid_state is preserved by each tick *)
   Lemma tick_preserves_valid : forall (s : state),
@@ -1067,8 +1182,28 @@ Section StateMachine.
   Proof.
   Admitted.
 
+  (* doiMem function: state -> state, if there's a valid request, set valid request to false *)
+  (* for any init values of secret registers -> # of 1's at each cycle are the same *)
+    (* at every tick, at every cycle the number of 1's is same across processes with different secrets *)
+  (* e2w intermediate that stores the result of execute -- might be secrets needs duplicate *)
+
+  (* later on: add data memory *)
+
   (* total HW of secret registers + their duals is constant per cycle *)
   (* (same dual-circuit argument as all_secure_secret, now for a full processor) *)
 
 End StateMachine.
 End StateMachine.
+
+(* Probability:
+    - if we have a secret register with a rv reg --> the case split on the distribution is the same as rv
+      - start w/ two register example
+      - mathematically reason about the cases
+    - state to list of states -> reason about the list of states each with uniform probability
+      -> at the end the num of states w/ bits = 1 is independent of secret
+
+    - add a generate rv instruction that generates some rv
+      - fork the state (e.g., 2^5 states)
+      - end: we can compute the static analysis, but never execute the forking function
+ *)
+
