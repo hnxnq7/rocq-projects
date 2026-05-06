@@ -1,35 +1,53 @@
-Section Montgomery
-  └── Math: LadderStep, CSwap, CSwap_eq
-
-Section HammingWeight
-  ├── ══ Field arithmetic ══
-  │     fadd_bv / fsub_bv / fmul_bv
-  ├── ══ Probabilistic model (future) ══
-  │     ProbType, ProbVar, ProbHW, prob_interp_instr
-  ├── ══ Register machine ISA ══
-  │     var, instr, program, HW, Observation
-  └── ══ Dual Circuit ══  (Section DualCircuit)
-      ├── ── Operational semantics ──
-      │     Env, state, interp_instr, dual_interp_instr, run
-      ├── ── Preservation lemmas ──
-      │     length + valid_state preservation
-      ├── ── HW complement ──
-      │     bv_to_bits_not, hw_complement
-      ├── ── Security: full register set ──
-      │     valid_state_num_1s, all_secure
-      ├── ── Security: secret registers only ──
-      │     RegClass, ladder_classify, num_1s_regs, all_secure_secret
-      ├── ── Compact register allocation ──
-      │     compact_program, compact_all_secure_secret
-      └── ── Selective dualization (bridge to processor) ──
-            valid_state_partial, dual_interp_selective
-
-Module StateMachine
-  ├── PipelineStage enum
-  ├── Section StateMachine
-  │   ├── state record (Regs, DRegs, buses, ...)
-  │   ├── ── Invariant ──
-  │   │     valid_state: DRegs[j] = bv_not(Regs[secret_map[j]])
-  │   └── ── Stage handlers ──
-  │         fetch, execute, writeback, tick, tick_iMem, tick_dMem
-  └── tick_preserves_valid (security goal)
+montgomery_ladder.v
+│
+├─ Section Montgomery  (lines 30–372)
+│    ├─ fadd / fsub / fmul / fsq   (field arithmetic)
+│    ├─ fmul_bounded, AffinePoint, ProjX, x_of
+│    ├─ affine_to_proj / proj_to_affine
+│    ├─ LadderStep                 (one differential-addition chain step)
+│    ├─ doubling/diff_add algebra lemmas  [Admitted]
+│    ├─ LadderStep_correct         [Admitted]
+│    ├─ MontLadder, MontLadder_rec, bit_i
+│    ├─ CSwap, MontLadderCSwap
+│    └─ CSwap_eq                   (Alg1 = Alg3 correctness)
+│
+├─ Section HammingWeight  (lines 380–1145)
+│    ├─ fadd_bv / fsub_bv / fmul_bv / fsq_bv   (bitvector field ops)
+│    ├─ ProbType, ProbVar, ProbHW, prob_interp_instr
+│    ├─ var, instr, program, HW, Observation
+│    │
+│    └─ Section DualCircuit  (lines 561–1144)
+│         ├─ Env, state, read/write_register
+│         ├─ interp_instr, dual_interp_instr, run
+│         ├─ valid_state, is_complement, secure
+│         ├─ Preservation lemmas (length + valid_state through run)
+│         ├─ bv_to_bits_not, hw_complement
+│         ├─ valid_state_num_1s, all_secure
+│         ├─ RegClass, ladder_classify, num_1s_regs, all_secure_secret
+│         ├─ compact_program, compact_all_secure_secret
+│         └─ valid_state_partial, dual_interp_selective
+│
+├─ Module StateMachine  (lines 1150–1600)
+│    ├─ PipelineStage (Fetch | Execute | WriteBack)
+│    │
+│    └─ Section StateMachine
+│         ├─ state record  (pc, Regs×32, DRegs×16, InstrMem, Stage, buses)
+│         ├─ valid_state  (DRegs[j] = bv_not(Regs[secret_map[j]]))
+│         ├─ read_reg, write_reg, exec_instr, update_dregs
+│         ├─ encode_instr, decode_instr
+│         ├─ fetch, execute, writeback, tick, tick_iMem, tick_dMem [Admitted]
+│         ├─ Vector/Fin helper lemmas
+│         ├─ tick_preserves_valid   ✓
+│         └─ Montgomery instantiation
+│              ├─ mk_reg, list_to_fin32_vec, ladder_secret_map
+│              ├─ ladder_regs, ladder_init, ladder_init_valid  ✓
+│              ├─ full_tick, run_ticks, ladder_result
+│              └─ ladder_result_valid  [Admitted]
+│
+└─ Section TwoRegProb  (lines 1620–1698)
+     ├─ two_state, two_instr (T_Add, T_GenRV)
+     ├─ Ensemble, read_r, write_r, all_bv
+     ├─ interp_two, step_two, run_two
+     ├─ HW2, total_HW_r1
+     ├─ mask_prog  [GenRV r1; Add r1 r0 r1]
+     └─ mask_security  [Admitted]
