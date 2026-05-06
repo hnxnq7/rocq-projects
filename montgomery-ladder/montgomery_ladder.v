@@ -27,13 +27,16 @@ Record ProjX (p : Z) := {
 
 Definition x_of {p : Z} (Q : AffinePoint p) : Z := aX Q.
 
+(* ══════════════════════════════════════════════════════════════════════════════
+   Math — integer-field LadderStep, conditional swap, and CSwap correctness
+   ══════════════════════════════════════════════════════════════════════════════ *)
 Section Montgomery.
   Variable p      : Z.             (* prime modulus                          *)
   Variable p_gt_0 : p > 0.
   Variable fp_inv : Z -> Z -> Z.   (* fp_inv p z = z^{-1} mod p             *)
   Variable A24    : Z.             (* (A+2)/4 mod p precomputed from curve  *)
 
-  (* field operations *)
+  (* ── Field arithmetic ───────────────────────────────────────────────────── *)
   Definition fadd (a b : Z) : Z := (a + b) mod p.
   Definition fsub (a b : Z) : Z := (a - b) mod p.
   Definition fmul (a b : Z) : Z := (a * b) mod p.
@@ -99,11 +102,11 @@ Section Montgomery.
     proj_to_affine (fsq Sp) (fmul (fsq Sm) X1) =
       x_of (scalar_mul (2 * k + 1) Q).
 
-  (* Inputs:
-         X1        : x(P) affine — fixed base point, used only in diff. add.
-         (X2, Z2)  : projective x-coord of R0 = [k]P
-         (X3, Z3)  : projective x-coord of R1 = [k+1]P
-       Output: (X2', Z2', X3', Z3') representing ([2k]P, [2k+1]P) *)
+  (* ── LadderStep ────────────────────────────────────────────────────────────
+     One iteration of the Montgomery differential-addition chain.
+     Inputs:  X1 = x(P) (public base point, affine)
+              (X2,Z2) = projective [k]P,  (X3,Z3) = projective [k+1]P
+     Output: (X2',Z2',X3',Z3') = ([2k]P, [2k+1]P)                          *)
   Definition LadderStep (X1 X2 Z2 X3 Z3 : Z) : Z * Z * Z * Z :=
     let U  := fadd X2 Z2 in          (* U  = X2 + Z2  *)
     let V  := fsub X2 Z2 in          (* V  = X2 - Z2  *)
@@ -226,7 +229,9 @@ Section Montgomery.
     intros. unfold MontLadder in *.
     case_match_in H eqn : Hrec. *)
 
-  (* algorithm 3 *)
+  (* ── CSwap ─────────────────────────────────────────────────────────────────
+     Algorithm 3: conditional swap of the (X2,Z2)/(X3,Z3) register pairs.
+     The swap is controlled by bit b; when b=true the pairs are exchanged.  *)
   Definition CSwap
       (X2 Z2 X3 Z3 : Z) (b : bool) : Z * Z * Z * Z :=
     if b
@@ -331,7 +336,9 @@ Section Montgomery.
       + exact H_ladder.
   Qed.
 
-  (* show result of alg 1 and alg 3 are the same *)
+  (* ── CSwap_eq ───────────────────────────────────────────────────────────────
+     Correctness: Algorithm 1 (MontLadder) and Algorithm 3 (MontLadderCSwap)
+     produce identical outputs for every input.                               *)
   Lemma CSwap_eq m xP n :
     MontLadderCSwap m xP n = MontLadder m xP n.
   Proof.
@@ -604,10 +611,49 @@ Section HammingWeight.
       length (write_register e i v) = length e.
     Proof. intros e i v. unfold write_register. apply length_insert. Qed.
 
+    (* Reading back a register you just wrote returns the written value. *)
+    Lemma read_register_write_same : forall (e : Env) (i : var) (v : bv n),
+      i < length e ->
+      read_register (write_register e i v) i = v.
+    Proof.
+      intros e. induction e as [| x xs IH]; intros i v Hi.
+      - simpl in Hi. lia.
+      - destruct i; simpl; [reflexivity | apply IH; simpl in Hi; lia].
+    Qed.
+
+    (* Reading a register other than the one written returns the original value. *)
+    Lemma read_register_write_diff : forall (e : Env) (i j : var) (v : bv n),
+      i <> j ->
+      read_register (write_register e i v) j = read_register e j.
+    Proof.
+      intros e. induction e as [| x xs IH]; intros i j v Hij.
+      - reflexivity.
+      - destruct i as [| i'], j as [| j']; simpl.
+        + contradiction.
+        + reflexivity.
+        + reflexivity.
+        + apply IH. intro H. apply Hij. f_equal. exact H.
+    Qed.
+
     Lemma interp_instr_preserves_length : forall (e : Env) (i : instr),
       length (interp_instr e i).1 = length e.
     Proof.
       intros e i. destruct i; simpl; rewrite ?write_register_length; reflexivity.
+    Qed.
+
+    (* Arithmetic ops only write to their destination rd.
+       Reading any other register r from env' gives the same value as from env. *)
+    Lemma interp_instr_read_other : forall (env0 : Env) (e : instr) (r : var),
+      (match e with
+       | IAdd rd _ _ | ISub rd _ _ | IMul rd _ _ => r <> rd
+       | Observe _                                => True
+       end) ->
+      read_register (interp_instr env0 e).1 r = read_register env0 r.
+    Proof.
+      intros env0 e r He.
+      destruct e as [rd rs1 rs2 | rd rs1 rs2 | rd rs1 rs2 | ro]; simpl in *.
+      all: try (apply read_register_write_diff; intro H; exact (He (eq_sym H))).
+      reflexivity.
     Qed.
 
     Lemma dual_interp_preserves_length : forall (s : state) (i : instr),
@@ -669,7 +715,7 @@ Section HammingWeight.
 
     
 
-    (* HW counting *)
+    (* ── HW complement ──────────────────────────────────────────────────────── *)
 
     Lemma fold_left_plus : forall (rest : list bool) (acc : nat),
       fold_left (fun (acc : nat) (b : bool) => if b then acc + 1 else acc) rest acc
@@ -1035,51 +1081,44 @@ Section HammingWeight.
       forall (classify : var → RegClass) (s : state) (e : instr),
         valid_state_partial s classify →
         (forall r, r < length s.(env)) →
+        length s.(denv) = length s.(env) →
         valid_state_partial (fst (dual_interp_selective classify s e)) classify.
     Proof.
-      (* intros classify s e Hpartial Hlen.
+      intros classify s e Hpartial Hlen Hdlen.
       unfold dual_interp_selective, valid_state_partial in *.
       destruct (interp_instr s.(env) e) as [env' obs] eqn:Hinterp.
-      simpl fst.
-      intros r Hsec Hr.
-      destruct e as [rd ra rb | rd ra rb | rd ra rb | ro];
-        simpl;
-        (try (destruct (decide (classify rd = SecretReg)) as [Heq | Hne])).
-      (* IAdd secret case: denv updated at rd *)
-      - destruct (decide (r = rd)) as [-> | Hne].
-        + rewrite !read_register_write_same. reflexivity.
-        + rewrite !read_register_write_diff by exact Hne.
-          apply Hpartial; [exact Hsec | exact Hr].
-      (* IAdd public case: denv unchanged, env' updated *)
-      - destruct (decide (r = rd)) as [-> | Hne].
-        + (* rd is secret (Hsec) but classify rd ≠ SecretReg (Hne) — contradiction *)
-          exfalso. apply Hne. exact Hsec.
-        + rewrite read_register_write_diff by exact Hne.
-          apply Hpartial; [exact Hsec | exact Hr].
-      (* ISub secret *)
-      - destruct (decide (r = rd)) as [-> | Hne].
-        + rewrite !read_register_write_same. reflexivity.
-        + rewrite !read_register_write_diff by exact Hne.
-          apply Hpartial; [exact Hsec | exact Hr].
-      (* ISub public *)
-      - destruct (decide (r = rd)) as [-> | Hne].
-        + exfalso. apply Hne. exact Hsec.
-        + rewrite read_register_write_diff by exact Hne.
-          apply Hpartial; [exact Hsec | exact Hr].
-      (* IMul secret *)
-      - destruct (decide (r = rd)) as [-> | Hne].
-        + rewrite !read_register_write_same. reflexivity.
-        + rewrite !read_register_write_diff by exact Hne.
-          apply Hpartial; [exact Hsec | exact Hr].
-      (* IMul public *)
-      - destruct (decide (r = rd)) as [-> | Hne].
-        + exfalso. apply Hne. exact Hsec.
-        + rewrite read_register_write_diff by exact Hne.
-          apply Hpartial; [exact Hsec | exact Hr].
-      (* Observe: denv unchanged *)
-      - apply Hpartial; [exact Hsec | exact Hr].
-    Qed. *)
-    Admitted.
+      simpl fst. intros r Hsec Hr.
+      cbn [env denv] in *.
+      assert (Hlen_denv : forall x, x < length s.(denv))
+        by (intro x; rewrite Hdlen; exact (Hlen x)).
+      assert (Hr' : r < length s.(env)).
+      { rewrite <- (interp_instr_preserves_length s.(env) e). rewrite Hinterp. exact Hr. }
+      (* After destruct + simpl, Hinterp becomes (write_register env rd v, []) = (env', obs).
+         injection extracts Henv' : write_register ... = env', which we rewrite backwards
+         to convert env' back to env at register r (via read_register_write_diff).        *)
+      destruct e as [rd ra rb | rd ra rb | rd ra rb | ro]; simpl in Hinterp;
+      injection Hinterp as Henv' _;
+      [ | | |
+        (* Observe: env' = env s directly *)
+        rewrite <- Henv'; exact (Hpartial r Hsec Hr') ];
+      (* Arithmetic cases: Henv' : write_register (env s) rd v = env'  *)
+      destruct (decide (classify rd = SecretReg)) as [Heq | Hne];
+      destruct (decide (r = rd)) as [-> | Hne_r].
+      (* Secret write, r = rd: dual slot written with the right value *)
+      all: try (rewrite read_register_write_same by exact (Hlen_denv rd); reflexivity).
+      (* Public write, r = rd: contradiction — r is secret but rd is public *)
+      all: try (exfalso; exact (Hne Hsec)).
+      (* r ≠ rd (both secret-write and public-write sub-cases):
+         - try: undo the denv write_register at rd (only present in the secret case)
+         - rewrite <- Henv': env' → write_register (env s) rd v
+         - rewrite write_diff: read_register at r ≠ rd recovers env s value
+         - Hpartial closes the goal *)
+      all: (
+        try (rewrite read_register_write_diff by (intro H; exact (Hne_r (eq_sym H))));
+        rewrite <- Henv';
+        rewrite read_register_write_diff by (intro H; exact (Hne_r (eq_sym H)));
+        exact (Hpartial r Hsec Hr')).
+    Qed.
 
     (* 1. set of public registers --> public are not duplicated *)
         (* ISA contract? write another update function where only have shadow regs for secret *)
@@ -1122,7 +1161,7 @@ Section StateMachine.
     pc        : bv n;
     Regs      : Vector.t (bv n) 32;      (* all 32 general-purpose registers   *)
     DRegs     : Vector.t (bv n) 16;      (* dual of the 16 secret registers    *)
-    InstrMem  : list instr;              (* program — public                   *) (* to be changed to bv n*)
+    InstrMem  : list (bv n);             (* program stored as encoded bitvectors — public *)
     (* DataMem   : nat -> bv n;             data heap                          *)
     Stage     : PipelineStage;           (* current pipeline stage             *)
 
@@ -1144,23 +1183,109 @@ Section StateMachine.
      Every dual slot holds the bitwise complement of its secret original.
      DRegs[j] = bv_not (Regs[secret_map[j]])  for all j : Fin.t 16         *)
   Definition valid_state (s : state) : Prop :=
-    forall j : Fin.t 16,
+    (* DRegs[j] = bv_not(Regs[secret_map[j]]) for every secret slot *)
+    (forall j : Fin.t 16,
       Vector.nth s.(DRegs) j =
-      bv_not (Vector.nth s.(Regs) (Vector.nth secret_map j)).
+      bv_not (Vector.nth s.(Regs) (Vector.nth secret_map j)))
+    /\
+    (* E2W register: when valid, the dual value is the complement of val *)
+    (match s.(bookkeepingState) with
+     | (((v, _), val), dval) => v = true -> dval = bv_not val
+     end).
+
+  (* ── Combinational units ─────────────────────────────────────────────── *)
+
+  (* Safe register read/write by nat index *)
+  Definition read_reg (rs : Vector.t (bv n) 32) (r : var) : bv n :=
+    match Fin.of_nat r 32%nat with
+    | inleft f  => Vector.nth rs f
+    | inright _ => bv_0 n
+    end.
+
+  Definition write_reg (rs : Vector.t (bv n) 32) (r : var) (v : bv n) : Vector.t (bv n) 32 :=
+    match Fin.of_nat r 32%nat with
+    | inleft f  => Vector.replace rs f v
+    | inright _ => rs
+    end.
+
+  (* ALU: decode + compute. Returns (write_enable, rd, val).
+     we=true for arithmetic, false for Observe (no writeback needed). *)
+  Definition exec_instr (rs : Vector.t (bv n) 32) (e : instr) : bool * var * bv n :=
+    let get r := read_reg rs r in
+    match e with
+    | IAdd rd rs1 rs2 => (true,  rd, bv_add (get rs1) (get rs2))
+    | ISub rd rs1 rs2 => (true,  rd, bv_sub (get rs1) (get rs2))
+    | IMul rd rs1 rs2 => (true,  rd, bv_mul (get rs1) (get rs2))
+    | Observe _       => (false, 0%nat, bv_0 n)
+    end.
+
+  (* DRegs selective update: set DRegs[j] := v for every j where secret_map[j] = rd *)
+  Definition update_dregs (dregs : Vector.t (bv n) 16) (rd : var) (v : bv n)
+      : Vector.t (bv n) 16 :=
+    Vector.map2
+      (fun dreg (mapped : Fin.t 32) =>
+        if Nat.eqb (proj1_sig (Fin.to_nat mapped)) rd then v else dreg)
+      dregs secret_map.
+
+  (* Instruction encoding: bit layout [rs2(5)|rs1(5)|rd(5)|op(2)], requires n ≥ 17.
+     op: 0=IAdd 1=ISub 2=IMul 3=Observe *)
+  Definition encode_instr (e : instr) : bv n :=
+    let pack (op rd rs1 rs2 : nat) :=
+      Z_to_bv n (Z.of_nat op
+               + Z.of_nat rd  * 4
+               + Z.of_nat rs1 * 128
+               + Z.of_nat rs2 * 4096) in
+    match e with
+    | IAdd rd rs1 rs2 => pack 0%nat rd rs1 rs2
+    | ISub rd rs1 rs2 => pack 1%nat rd rs1 rs2
+    | IMul rd rs1 rs2 => pack 2%nat rd rs1 rs2
+    | Observe ro      => pack 3%nat ro 0%nat 0%nat
+    end.
+
+  Definition decode_instr (b : bv n) : option instr :=
+    let v   := bv_unsigned b in
+    let op  := Z.to_nat (v mod 4) in
+    let rd  := Z.to_nat (v / 4   mod 32) in
+    let rs1 := Z.to_nat (v / 128  mod 32) in
+    let rs2 := Z.to_nat (v / 4096 mod 32) in
+    match op with
+    | 0%nat => Some (IAdd rd rs1 rs2)
+    | 1%nat => Some (ISub rd rs1 rs2)
+    | 2%nat => Some (IMul rd rs1 rs2)
+    | 3%nat => Some (Observe rd)
+    | _     => None
+    end.
 
   (* ── Stage handlers ──────────────────────────────────────────────────── *)
   Definition fetch (s : state) : state :=
     s <|toiMem := (true, s.(pc))|>
-    <|Stage := Execute|>.
+      <|Stage := Execute|>.
 
-  Definition execute   : state -> state. Admitted.
-  (* upsate bookeepingState *)
-  Definition writeback : state -> state. Admitted.
-  (* read bookeepingState *)
+  (* Execute reads from fromiMem (set by tick_iMem the same cycle fetch ran) *)
+  Definition execute (s : state) : state :=
+    let '(valid, encoded) := s.(fromiMem) in
+    if valid then
+      match decode_instr encoded with
+      | None   => s <|fromiMem := (false, encoded)|> <|Stage := WriteBack|>
+      | Some e =>
+          let '((we, rd), v) := exec_instr s.(Regs) e in
+          s <|bookkeepingState := (((we, rd), v), bv_not v)|>
+            <|fromiMem := (false, encoded)|>
+            <|pc    := bv_add s.(pc) (Z_to_bv n 1)|>
+            <|Stage := WriteBack|>
+      end
+    else
+      s <|Stage := WriteBack|>.
 
-  (* something to translate instr to bv n? - LLM *)
-  (* function respond iMem state -> state *)
-    (* fetch instruction from instrMem and respond in fromiMem *)
+  Definition writeback (s : state) : state :=
+    let '(((valid, rd), val), dval) := s.(bookkeepingState) in
+    if valid then
+      s <|Regs  := write_reg s.(Regs) rd val|>
+        <|DRegs := update_dregs s.(DRegs) rd dval|>
+        <|bookkeepingState := (((false, 0%nat), bv_0 n), bv_0 n)|>
+        <|Stage := Fetch|>
+    else
+      s <|Stage := Fetch|>.
 
   (* One clock tick: dispatch on the current pipeline stage *)
   Definition tick (s : state) : state :=
@@ -1172,38 +1297,398 @@ Section StateMachine.
 
   (* Memory-side ticks — admitted until bus protocol is defined *)
   Definition tick_dMem : state -> state. Admitted.
-  Definition tick_iMem : state -> state. Admitted.
 
-  (* Security theorems *)
+  (* Instruction memory responder (doiMem):
+     if toiMem carries a valid request, encode InstrMem[addr] onto fromiMem
+     and clear the request valid bit. *)
+  Definition tick_iMem (s : state) : state :=
+    let '(valid, addr) := s.(toiMem) in
+    if valid then
+      let encoded := match nth_error s.(InstrMem) (Z.to_nat (bv_unsigned addr)) with
+                     | Some b => b
+                     | None   => bv_0 n
+                     end in
+      s <|fromiMem := (true,  encoded)|>
+        <|toiMem   := (false, addr)  |>
+    else s.
 
-  (* valid_state is preserved by each tick *)
+  (* ── Security proof helpers ─────────────────────────────────────────── *)
+
+  (* nth of Vector.map2 reduces pointwise — direct from stdlib VectorSpec.nth_map2 *)
+  Lemma Vector_nth_map2 : forall (A B C : Type) (m : nat) (f : A -> B -> C)
+      (v1 : Vector.t A m) (v2 : Vector.t B m) (j : Fin.t m),
+    Vector.nth (Vector.map2 f v1 v2) j = f (Vector.nth v1 j) (Vector.nth v2 j).
+  Proof.
+    intros A B C m f v1 v2 j.
+    exact (nth_map2 f v1 v2 j j j eq_refl eq_refl).
+  Qed.
+
+  (* Vector.replace at the same / a different position — from stdlib VectorSpec *)
+  Lemma Vector_nth_replace_same : forall (A : Type) (m : nat) (v : Vector.t A m)
+      (p : Fin.t m) (a : A),
+    Vector.nth (Vector.replace v p a) p = a.
+  Proof.
+    intros A m v p a.
+    exact (nth_replace_eq A m p v a).
+  Qed.
+
+  Lemma Vector_nth_replace_diff : forall (A : Type) (m : nat) (v : Vector.t A m)
+      (p q : Fin.t m) (a : A),
+    p <> q -> Vector.nth (Vector.replace v p a) q = Vector.nth v q.
+  Proof.
+    intros A m v p q a Hpq.
+    (* stdlib: nth_replace_neq n p q (p≠q) v a : nth (replace v q a) p = nth v p
+       our goal: nth (replace v p a) q = nth v q  — swap p and q *)
+    exact (nth_replace_neq A m q p (fun H => Hpq (eq_sym H)) v a).
+  Qed.
+
+  (* update_dregs[j] = v   when secret_map[j] points to rd *)
+  Lemma nth_update_dregs_eq (dregs : Vector.t (bv n) 16) (rd : var) (v : bv n) (j : Fin.t 16) :
+    proj1_sig (Fin.to_nat (Vector.nth secret_map j)) = rd ->
+    Vector.nth (update_dregs dregs rd v) j = v.
+  Proof.
+    intro Heq. unfold update_dregs.
+    rewrite Vector_nth_map2. simpl.
+    rewrite <- Heq, Nat.eqb_refl. reflexivity.
+  Qed.
+
+  (* update_dregs[j] = dregs[j]   when secret_map[j] does not point to rd *)
+  Lemma nth_update_dregs_neq (dregs : Vector.t (bv n) 16) (rd : var) (v : bv n) (j : Fin.t 16) :
+    proj1_sig (Fin.to_nat (Vector.nth secret_map j)) <> rd ->
+    Vector.nth (update_dregs dregs rd v) j = Vector.nth dregs j.
+  Proof.
+    intro Hne. unfold update_dregs.
+    rewrite Vector_nth_map2. simpl.
+    rewrite (proj2 (Nat.eqb_neq _ _) Hne). reflexivity.
+  Qed.
+
+  (* Fin.R_sanity with n=1 gives proj1_sig (to_nat (FS f)) = S (proj1_sig (to_nat f)).
+     Direct reflexivity fails because proj1_sig doesn't commute through the stuck match
+     on abstract to_nat f; R_sanity avoids that by providing a pre-proved equation. *)
+  Lemma to_nat_FS_proj1 {m} (f : Fin.t m) :
+      proj1_sig (Fin.to_nat (Fin.FS f)) = S (proj1_sig (Fin.to_nat f)).
+  Proof. exact (Fin.R_sanity 1 f). Qed.
+
+  (* Helper: when Fin.of_nat rd m = inleft f, the index of f equals rd. *)
+  Lemma of_nat_inleft_to_nat (rd : nat) : forall (m : nat) (f : Fin.t m),
+      Fin.of_nat rd m = inleft f -> proj1_sig (Fin.to_nat f) = rd.
+  Proof.
+    induction rd as [| rd' IH]; intros m f Hof.
+    - destruct m as [| m']; simpl in Hof.
+      + discriminate.
+      + injection Hof as <-. reflexivity.
+    - destruct m as [| m']; simpl in Hof.
+      + discriminate.
+      + destruct (Fin.of_nat rd' m') as [f' | arg] eqn:Hof'; simpl in Hof.
+        * injection Hof as <-.
+          rewrite to_nat_FS_proj1.
+          exact (f_equal S (IH m' f' Hof')).
+        * discriminate.
+  Qed.
+
+  (* write_reg[j] = v / unchanged depending on whether j = rd *)
+  Lemma nth_write_reg_same (rs : Vector.t (bv n) 32) (rd : var) (v : bv n) (j : Fin.t 32) :
+    proj1_sig (Fin.to_nat j) = rd ->
+    Vector.nth (write_reg rs rd v) j = v.
+  Proof.
+    intro Hrd. unfold write_reg.
+    destruct (Fin.of_nat rd 32) as [f | arg] eqn:Hof.
+    - assert (Hjf : j = f).
+      { apply Fin.to_nat_inj. rewrite Hrd. exact (eq_sym (of_nat_inleft_to_nat rd 32 f Hof)). }
+      rewrite Hjf. apply nth_replace_eq.
+    - exfalso.
+      destruct arg as [m Hm].
+      pose proof (proj2_sig (Fin.to_nat j)) as Hlt.
+      rewrite Hrd, Hm in Hlt. lia.
+  Qed.
+
+  Lemma nth_write_reg_diff (rs : Vector.t (bv n) 32) (rd : var) (v : bv n) (j : Fin.t 32) :
+    proj1_sig (Fin.to_nat j) <> rd ->
+    Vector.nth (write_reg rs rd v) j = Vector.nth rs j.
+  Proof.
+    intro Hne. unfold write_reg.
+    destruct (Fin.of_nat rd 32) as [f | arg] eqn:Hof.
+    - apply nth_replace_neq.
+      intro Heq. apply Hne. subst j.
+      exact (of_nat_inleft_to_nat rd 32 f Hof).
+    - reflexivity.
+  Qed.
+
+  (* ── RecordUpdate field-preservation: setting Stage leaves other fields alone ── *)
+
+  Lemma DRegs_set_Stage (s : state) (v : PipelineStage) :
+      (s <|Stage := v|>).(DRegs) = s.(DRegs).
+  Proof. destruct s; reflexivity. Qed.
+
+  Lemma Regs_set_Stage (s : state) (v : PipelineStage) :
+      (s <|Stage := v|>).(Regs) = s.(Regs).
+  Proof. destruct s; reflexivity. Qed.
+
+  Lemma bks_set_Stage (s : state) (v : PipelineStage) :
+      (s <|Stage := v|>).(bookkeepingState) = s.(bookkeepingState).
+  Proof. destruct s; reflexivity. Qed.
+
+  (* WriteBack true: 4-setter chain — each field projects to its new value *)
+  Lemma DRegs_writeback_chain (s : state) (rd : var) (val : bv n) :
+      (s <|Regs  := write_reg   s.(Regs)  rd val        |>
+         <|DRegs := update_dregs s.(DRegs) rd (bv_not val)|>
+         <|bookkeepingState := (((false, 0%nat), bv_0 n), bv_0 n)|>
+         <|Stage := Fetch|>).(DRegs) = update_dregs s.(DRegs) rd (bv_not val).
+  Proof. destruct s; reflexivity. Qed.
+
+  Lemma Regs_writeback_chain (s : state) (rd : var) (val : bv n) :
+      (s <|Regs  := write_reg   s.(Regs)  rd val        |>
+         <|DRegs := update_dregs s.(DRegs) rd (bv_not val)|>
+         <|bookkeepingState := (((false, 0%nat), bv_0 n), bv_0 n)|>
+         <|Stage := Fetch|>).(Regs) = write_reg s.(Regs) rd val.
+  Proof. destruct s; reflexivity. Qed.
+
+  Lemma bks_writeback_chain (s : state) (rd : var) (val : bv n) :
+      (s <|Regs  := write_reg   s.(Regs)  rd val        |>
+         <|DRegs := update_dregs s.(DRegs) rd (bv_not val)|>
+         <|bookkeepingState := (((false, 0%nat), bv_0 n), bv_0 n)|>
+         <|Stage := Fetch|>).(bookkeepingState) = (((false, 0%nat), bv_0 n), bv_0 n).
+  Proof. destruct s; reflexivity. Qed.
+
+  (* ── Security theorem ───────────────────────────────────────────────── *)
+
   Lemma tick_preserves_valid : forall (s : state),
     valid_state s -> valid_state (tick s).
   Proof.
+    intros s [Hdregs Hbks].
+    unfold tick.
+    destruct s.(Stage).
+
+    - (* Fetch: only toiMem and Stage updated; Regs/DRegs/bks unchanged *)
+      unfold fetch, valid_state. simpl.
+      split; [intro j; exact (Hdregs j) | exact Hbks].
+
+    - (* Execute: only bks/fromiMem/pc/Stage updated; Regs/DRegs unchanged *)
+      unfold execute, valid_state.
+      destruct s.(fromiMem) as [valid encoded]. simpl.
+      destruct valid.
+      + destruct (decode_instr encoded) as [e |].
+        * destruct (exec_instr s.(Regs) e) as [[we rd] v]. simpl.
+          split; [intro j; exact (Hdregs j) | intro; reflexivity].
+        * simpl. split; [intro j; exact (Hdregs j) | exact Hbks].
+      + simpl. split; [intro j; exact (Hdregs j) | exact Hbks].
+
+    - (* WriteBack: Regs/DRegs updated (valid=true) or Stage-only (valid=false) *)
+      unfold writeback, valid_state.
+      (* eqn: keeps the LHS as s.(bookkeepingState) so we can rewrite with it later *)
+      destruct s.(bookkeepingState) as [[[valid rd] val] dval] eqn:Hbks_eq.
+      destruct valid.
+      + (* valid=true: dval = bv_not val by the bks invariant *)
+        assert (Hdval : dval = bv_not val) by (apply Hbks; reflexivity).
+        subst dval.
+        split.
+        * intro j.
+          rewrite DRegs_writeback_chain, Regs_writeback_chain.
+          destruct (Nat.eq_dec (proj1_sig (Fin.to_nat (Vector.nth secret_map j))) rd)
+            as [Heq | Hne].
+          { rewrite nth_update_dregs_eq by exact Heq.
+            rewrite nth_write_reg_same by exact Heq.
+            reflexivity. }
+          { rewrite nth_update_dregs_neq by exact Hne.
+            rewrite nth_write_reg_diff by exact Hne.
+            exact (Hdregs j). }
+        * rewrite bks_writeback_chain. intro H. discriminate H.
+      + (* valid=false: only Stage updated; DRegs/Regs/bks project back to s *)
+        rewrite DRegs_set_Stage, Regs_set_Stage.
+        split; [intro j; exact (Hdregs j)|].
+        rewrite bks_set_Stage, Hbks_eq.
+        exact Hbks.
+  Qed.
+
+  (* TODO: extend valid_state to cover bookkeepingState (E2W register carries secrets) *)
+  (* TODO: tick_dMem + DataMem field — data memory bus, dualized like DRegs             *)
+  (* TODO: HW constant per cycle — processor-level analogue of all_secure_secret        *)
+
+  (* ══════════════════════════════════════════════════════════════════════════════
+     Montgomery LadderStep on the processor — concrete instantiation
+     Load the 18-instruction program into InstrMem, fix the secret register
+     map, build an initial valid_state, and run for 54 ticks (18 instrs × 3
+     pipeline stages).
+     ══════════════════════════════════════════════════════════════════════════════ *)
+
+  (* Safe Fin.t 32 from a nat index; defaults to F1 for any out-of-range value. *)
+  Definition mk_reg (k : nat) : Fin.t 32 :=
+    match Fin.of_nat k 32 with
+    | inleft f  => f
+    | inright _ => Fin.F1
+    end.
+
+  (* Secret registers: the 16 working registers of one LadderStep iteration.
+     Public: rX1(0) — base-point x-coord; rA24(5) — curve constant (A+2)/4.
+     Secret: projective coordinates X2(1),Z2(2),X3(3),Z3(4) and 12 intermediates
+             U(6)..Sm(15), plus the output X2'(19).  The four outputs
+             X3'(16), Z3'(18), Z2'(23) are left outside this map for clarity. *)
+  (* list_to_fin32_vec: convert nat indices to a Fin.t 32 vector.
+     Both Vector.nil and Vector.cons take A as their first EXPLICIT argument. *)
+  Fixpoint list_to_fin32_vec (ks : list nat)
+      : Vector.t (Fin.t 32%nat) (List.length ks) :=
+    match ks return Vector.t (Fin.t 32%nat) (List.length ks) with
+    | []       => @Vector.nil (Fin.t 32%nat)
+    | k :: ks' => @Vector.cons (Fin.t 32%nat) (mk_reg k) _ (list_to_fin32_vec ks')
+    end.
+
+  Definition ladder_secret_map : Vector.t (Fin.t 32%nat) 16 :=
+    list_to_fin32_vec
+      [1; 2; 3; 4; 6; 7; 8; 9; 10; 11; 12; 13; 14; 15; 16; 19]%nat.
+
+  (* Encode the LadderStep program as a flat list of instruction words. *)
+  Definition ladder_instr_mem : list (bv n) := map encode_instr program.
+
+  (* Build the initial 32-register file from the six input values.
+     Register assignment: 0=X1(public), 1=X2, 2=Z2, 3=X3, 4=Z3, 5=A24(public). *)
+  Definition ladder_regs (x2 z2 x3 z3 x1 a24 : bv n) : Vector.t (bv n) 32 :=
+    let z := Vector.const (bv_0 n) 32 in
+    write_reg (write_reg (write_reg (write_reg (write_reg (write_reg
+      z 0%nat x1) 1%nat x2) 2%nat z2) 3%nat x3) 4%nat z3) 5%nat a24.
+
+  (* Initial processor state.  DRegs are set to the bitwise complement of
+     secret_map's projection of Regs, so valid_state holds by construction. *)
+  Definition ladder_init (x2 z2 x3 z3 x1 a24 : bv n) : state :=
+    let regs := ladder_regs x2 z2 x3 z3 x1 a24 in
+    {| pc        := bv_0 n
+     ; Regs      := regs
+     ; DRegs     := Vector.map (fun f => bv_not (Vector.nth regs f)) secret_map
+     ; InstrMem  := ladder_instr_mem
+     ; Stage     := Fetch
+     ; toiMem   := (false, bv_0 n)
+     ; fromiMem := (false, bv_0 n)
+     ; bookkeepingState := (((false, 0%nat), bv_0 n), bv_0 n) |}.
+
+  Lemma ladder_init_valid (x2 z2 x3 z3 x1 a24 : bv n) :
+      valid_state (ladder_init x2 z2 x3 z3 x1 a24).
+  Proof.
+    unfold valid_state, ladder_init. simpl. split.
+    - intro j. rewrite (@Vector.nth_map _ _ _ _ _ j j eq_refl). reflexivity.
+    - intro H. discriminate.
+  Qed.
+
+  (* One full clock cycle: processor stage transition + instruction memory response. *)
+  Definition full_tick (s : state) : state := tick_iMem (tick s).
+
+  (* Iterate full_tick for a given number of cycles. *)
+  Fixpoint run_ticks (s : state) (fuel : nat) : state :=
+    match fuel with
+    | O       => s
+    | S fuel' => run_ticks (full_tick s) fuel'
+    end.
+
+  (* Run one complete LadderStep: 18 instructions × 3 pipeline stages = 54 ticks. *)
+  Definition ladder_result (x2 z2 x3 z3 x1 a24 : bv n) : state :=
+    run_ticks (ladder_init x2 z2 x3 z3 x1 a24) 54.
+
+  (* Security corollary: valid_state is preserved for all 54 ticks. *)
+  Lemma ladder_result_valid (x2 z2 x3 z3 x1 a24 : bv n) :
+      valid_state (ladder_result x2 z2 x3 z3 x1 a24).
+  Proof.
+    unfold ladder_result.
+    (* run_ticks composes 54 applications of full_tick; each preserves valid_state
+       by tick_preserves_valid + tick_iMem (admitted until tick_iMem is proved). *)
   Admitted.
 
-  (* doiMem function: state -> state, if there's a valid request, set valid request to false *)
-  (* for any init values of secret registers -> # of 1's at each cycle are the same *)
-    (* at every tick, at every cycle the number of 1's is same across processes with different secrets *)
-  (* e2w intermediate that stores the result of execute -- might be secrets needs duplicate *)
-
-  (* later on: add data memory *)
-
-  (* total HW of secret registers + their duals is constant per cycle *)
-  (* (same dual-circuit argument as all_secure_secret, now for a full processor) *)
-
 End StateMachine.
 End StateMachine.
 
-(* Probability:
-    - if we have a secret register with a rv reg --> the case split on the distribution is the same as rv
-      - start w/ two register example
-      - mathematically reason about the cases
-    - state to list of states -> reason about the list of states each with uniform probability
-      -> at the end the num of states w/ bits = 1 is independent of secret
+(* ══════════════════════════════════════════════════════════════════════════════
+   Probabilistic Two-Register Model
+   Core idea: masking a secret register with a fresh uniform random value leaks
+   no information through Hamming-weight side channels.
 
-    - add a generate rv instruction that generates some rv
-      - fork the state (e.g., 2^5 states)
-      - end: we can compute the static analysis, but never execute the forking function
- *)
+   Machine: two n-bit registers — r0 (secret, unknown to attacker), r1 (random).
+   Ensemble semantics: GenRV forks the current state into 2^n copies, one per
+   possible value of the target register, modelling uniform sampling.  The key
+   property is that bv_add secret is a permutation on bv n, so after
+     GenRV r1 ; Add r1 r0 r1
+   the multiset of r1 values across the ensemble is {0,..,2^n-1} regardless of
+   the secret in r0 — the total Hamming weight is therefore constant.
+
+   Note: GenRV is a proof/analysis device only; the actual processor never
+   executes it.  The run_two function is used purely for the security argument.
+   ══════════════════════════════════════════════════════════════════════════════ *)
+Section TwoRegProb.
+  Variable n : N.
+
+  (* ── State: just two registers ─────────────────────────────────────── *)
+  Record two_state := mk_two_state { r0 : bv n; r1 : bv n }.
+
+  (* ── Instruction set ────────────────────────────────────────────────── *)
+  (* Register index: false = r0 (secret),  true = r1 (random) *)
+  Inductive two_instr :=
+    | T_Add   (rd rs1 rs2 : bool)  (* rd ← rs1 + rs2                          *)
+    | T_GenRV (rd : bool).         (* rd := uniform random (forks the ensemble) *)
+
+  (* ── Ensemble: list of equally-probable states ──────────────────────── *)
+  Definition Ensemble := list two_state.
+
+  Definition read_r (s : two_state) (r : bool) : bv n :=
+    if r then s.(r1) else s.(r0).
+
+  Definition write_r (s : two_state) (r : bool) (v : bv n) : two_state :=
+    if r then mk_two_state s.(r0) v
+    else      mk_two_state v      s.(r1).
+
+  (* Every n-bit bitvector in order — the range GenRV samples uniformly. *)
+  Definition all_bv : list (bv n) :=
+    map (fun k => Z_to_bv n (Z.of_nat k)) (seq 0 (Z.to_nat (2 ^ Z.of_N n))).
+
+  (* ── Small-step semantics ───────────────────────────────────────────── *)
+
+  (* One instruction on one state produces a list of successor states.
+     T_Add is deterministic (singleton list); T_GenRV forks into |all_bv| = 2^n copies. *)
+  Definition interp_two (s : two_state) (e : two_instr) : list two_state :=
+    match e with
+    | T_Add rd rs1 rs2 =>
+        [write_r s rd (bv_add (read_r s rs1) (read_r s rs2))]
+    | T_GenRV rd =>
+        map (fun v => write_r s rd v) all_bv
+    end.
+
+  (* Lift one step over the full ensemble. *)
+  Definition step_two (ens : Ensemble) (e : two_instr) : Ensemble :=
+    flat_map (fun s => interp_two s e) ens.
+
+  (* Run a program to completion. *)
+  Fixpoint run_two (ens : Ensemble) (prog : list two_instr) : Ensemble :=
+    match prog with
+    | []        => ens
+    | e :: rest => run_two (step_two ens e) rest
+    end.
+
+  (* ── Security metric ────────────────────────────────────────────────── *)
+
+  (* Hamming weight of a single bitvector. *)
+  Definition HW2 (a : bv n) : nat :=
+    fold_left (fun (acc : nat) (b : bool) => if b then (acc + 1)%nat else acc) (bv_to_bits a) 0%nat.
+
+  (* Total HW of r1 across the entire ensemble (the side-channel observable). *)
+  Definition total_HW_r1 (ens : Ensemble) : nat :=
+    fold_left (fun (acc : nat) (s : two_state) => (acc + HW2 s.(r1))%nat) ens 0%nat.
+
+  (* ── Masking program ────────────────────────────────────────────────── *)
+
+  (* Step 1: GenRV r1 — fork into 2^n copies, each with a distinct r1 value.
+     Step 2: Add r1 r0 r1 — mask r1 with the secret in r0. *)
+  Definition mask_prog : list two_instr :=
+    [ T_GenRV true               (* r1 := uniform random                       *)
+    ; T_Add   true false true ]. (* r1 ← r0 + r1  (mask secret with random)    *)
+
+  (* ── Key security lemma ─────────────────────────────────────────────── *)
+  (* After mask_prog, total_HW_r1 is the same for any two secrets.
+     Proof outline:
+       • After T_GenRV: r1 ∈ {0,..,2^n-1} → total_HW = ∑_v HW(v) = n·2^(n-1).
+       • T_Add maps r1 ↦ secret + r1; since bv_add secret is a permutation,
+         {secret+v | v ∈ all_bv} = all_bv as multisets.
+       • Hence total_HW_r1 is unchanged ⟹ independent of secret.            *)
+  Lemma mask_security (s1 s2 : bv n) :
+    total_HW_r1 (run_two [mk_two_state s1 (bv_0 n)] mask_prog) =
+    total_HW_r1 (run_two [mk_two_state s2 (bv_0 n)] mask_prog).
+  Proof.
+    (* Needs: bv_add is a permutation (bv arithmetic) + ∑ HW over all_bv is constant. *)
+  Admitted.
+
+End TwoRegProb.
 
